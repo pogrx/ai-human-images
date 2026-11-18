@@ -6,5 +6,11 @@ __pycache__/
 # (files over 100 MB need Git LFS on GitHub).
 checkpoints/
 
+# Datasets: downloaded parquet files and unpacked images (keep only the folder skeleton)
+downloads/
+data/**
+!data/**/
+!data/**/.gitkeep
+
 # Prediction outputs
 results*.csv
