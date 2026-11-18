@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Trained weights. Remove this line if you want to commit a trained model
+# (files over 100 MB need Git LFS on GitHub).
+checkpoints/
+
+# Prediction outputs
+results*.csv
