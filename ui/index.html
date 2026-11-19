@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Image Detector</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --surface: #ffffff; --surface-2: #eef0f3; --border: #dde1e6;
+    --text: #15181d; --muted: #5d6673; --accent: #3b5bdb;
+    --ai: #d9480f; --ai-soft: #fff0e6; --real: #0c8a6c; --real-soft: #e3f6f0;
+    --wrong: #c92a2a; --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101216; --surface: #181b21; --surface-2: #20242c; --border: #2c313a;
+      --text: #e8eaee; --muted: #9aa3b0; --accent: #7c95f5;
+      --ai: #ff8a4c; --ai-soft: #3a2316; --real: #3dd6ab; --real-soft: #10302a;
+      --wrong: #ff6b6b; --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 16px 64px; }
+  header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px 24px; margin-bottom: 20px; }
+  h1 { font-size: 24px; margin: 0; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 2px 0 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
+          font-size: 13px; color: var(--muted); }
+  .chip b { color: var(--text); font-weight: 600; }
+
+  .panels { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .panels { grid-template-columns: 1fr; } }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: var(--shadow); }
+  .panel h2 { font-size: 15px; margin: 0 0 4px; }
+  .panel p { margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+
+  .drop { border: 2px dashed var(--border); border-radius: 10px; padding: 28px 16px; text-align: center; cursor: pointer;
+          transition: border-color .15s, background .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--surface-2); }
+  .drop strong { display: block; font-size: 16px; }
+  .drop span { color: var(--muted); font-size: 13px; }
+
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button, select { font: inherit; font-size: 14px; border-radius: 8px; border: 1px solid var(--border);
+                   background: var(--surface-2); color: var(--text); padding: 7px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .score { margin-top: 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px; font-size: 14px; }
+  .score b { font-size: 18px; }
+
+  .toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin: 24px 0 12px; }
+  .toolbar h2 { font-size: 16px; margin: 0; }
+  label.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; color: var(--muted); cursor: pointer; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); }
+  .frame { position: relative; aspect-ratio: 4 / 3; background: var(--surface-2); }
+  .frame img, .frame canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .frame canvas { pointer-events: none; transition: opacity .2s; }
+  body:not(.heat) .frame canvas { opacity: 0; }
+  .frame .loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 14px; }
+  .body { padding: 12px 14px 14px; }
+  .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .pct { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .verdict { font-weight: 600; font-size: 14px; }
+  .meter { position: relative; height: 8px; border-radius: 999px; margin: 8px 0 4px;
+           background: linear-gradient(90deg, var(--real), var(--surface-2) 50%, var(--ai)); }
+  .meter i { position: absolute; top: -4px; width: 4px; height: 16px; border-radius: 2px; background: var(--text);
+             transform: translateX(-2px); box-shadow: 0 0 0 2px var(--surface); }
+  .scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+  .meta { margin-top: 8px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  .truth { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; }
+  .badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+  .badge.ok { background: var(--real-soft); color: var(--real); }
+  .badge.bad { background: color-mix(in srgb, var(--wrong) 15%, transparent); color: var(--wrong); }
+  .ai { color: var(--ai); } .real { color: var(--real); }
+  .error { color: var(--wrong); font-size: 14px; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 16px; border: 1px dashed var(--border); border-radius: 12px; }
+  .note { margin-top: 28px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body class="heat">
+<main>
+  <header>
+    <div>
+      <h1>AI Image Detector</h1>
+      <p class="sub">Scores how likely an image is AI-generated, from its pixels alone. 0% = real, 100% = AI.</p>
+    </div>
+    <div class="chips" id="chips"><span class="chip">Loading model…</span></div>
+  </header>
+
+  <div class="panels">
+    <section class="panel">
+      <h2>Test your own images</h2>
+      <p>Drop images here, click to choose files, or paste an image with Ctrl+V.</p>
+      <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose images to analyze">
+        <strong>Drop images to analyze</strong>
+        <span>JPG, PNG, WebP, BMP, TIFF or GIF, up to 50 MB each</span>
+      </div>
+      <input type="file" id="file" accept="image/*,.tif,.tiff" multiple hidden>
+    </section>
+
+    <section class="panel">
+      <h2>Quiz the model</h2>
+      <p id="heldout-desc">Score held-out images the model never trained on and check its answers.</p>
+      <div class="row">
+        <select id="kind" aria-label="Which images">
+          <option value="mixed">Mixed AI and real</option>
+          <option value="ai">AI images only</option>
+          <option value="real">Real images only</option>
+        </select>
+        <select id="count" aria-label="How many">
+          <option>3</option><option selected>6</option><option>12</option>
+        </select>
+        <button class="primary" id="quiz">Run test</button>
+      </div>
+      <div class="score" id="score">No test images scored yet.</div>
+    </section>
+  </div>
+
+  <div class="toolbar">
+    <h2>Results</h2>
+    <div class="row">
+      <label class="toggle"><input type="checkbox" id="heat" checked> Show region heatmap</label>
+      <button id="clear">Clear</button>
+    </div>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty">Results appear here.</div>
+
+  <p class="note">
+    The heatmap tints each part of the image by the score of the 256&times;256 crops covering it
+    (orange = looks AI, green = looks real). The overall score is the average over those crops.
+    Scores are statistical estimates, not proof, and are weaker on generators the model wasn't trained on.
+  </p>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const grid = $("grid"), empty = $("empty");
+let quizTotal = 0, quizCorrect = 0;
+let queue = Promise.resolve();  // analyze one image at a time
+
+// Round, but never across the 50% line, so the number always agrees with the verdict.
+const pct = (x) => (x < 0.5 ? Math.min(49, Math.round(x * 100)) : Math.max(50, Math.round(x * 100))) + "%";
+function verdict(c) {
+  if (c >= 0.8) return ["Very likely AI", "ai"];
+  if (c >= 0.5) return ["Likely AI", "ai"];
+  if (c > 0.2)  return ["Likely real", "real"];
+  return ["Very likely real", "real"];
+}
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+async function loadInfo() {
+  try {
+    const info = await (await fetch("/api/info")).json();
+    const chips = $("chips"); chips.textContent = "";
+    const add = (label, value) => { const c = el("span", "chip"); c.append(label + " "); c.append(el("b", null, value)); chips.append(c); };
+    if (info.val_acc != null) add("Held-out accuracy", pct(info.val_acc));
+    if (info.val_auc != null) add("AUC", info.val_auc.toFixed(3));
+    add("Model", info.arch);
+    add("Epoch", String(info.epoch));
+    const n = info.held_out.ai + info.held_out.real;
+    if (n === 0) {
+      $("heldout-desc").textContent = "No held-out images found. Put the dataset in data/train to use this.";
+      $("quiz").disabled = true;
+    } else {
+      $("heldout-desc").textContent =
+        `Score held-out images the model never trained on (${info.held_out.ai} AI, ${info.held_out.real} real) and check its answers.`;
+    }
+  } catch { $("chips").textContent = "Couldn't reach the model server."; }
+}
+
+function newCard(title) {
+  empty.hidden = true;
+  const card = el("article", "card");
+  const frame = el("div", "frame");
+  frame.append(el("div", "loading", "Analyzing…"));
+  const body = el("div", "body");
+  body.append(el("div", "meta", title));
+  card.append(frame, body);
+  grid.prepend(card);
+  return card;
+}
+
+function drawHeatmap(canvas, result, previewW, previewH) {
+  canvas.width = previewW; canvas.height = previewH;
+  const ctx = canvas.getContext("2d");
+  const sx = previewW / result.width, sy = previewH / result.height, cell = 6;
+  for (let y = 0; y < previewH; y += cell) {
+    for (let x = 0; x < previewW; x += cell) {
+      const ox = (x + cell / 2) / sx, oy = (y + cell / 2) / sy;
+      let sum = 0, n = 0;
+      for (const r of result.regions) {
+        const [l, t, rr, b] = r.box;
+        if (ox >= l && ox < rr && oy >= t && oy < b) { sum += r.score; n++; }
+      }
+      if (!n) continue;
+      const s = sum / n, strength = Math.min(1, Math.abs(s - 0.5) * 2);
+      ctx.fillStyle = s >= 0.5 ? `rgba(234, 88, 12, ${0.5 * strength})` : `rgba(16, 163, 127, ${0.5 * strength})`;
+      ctx.fillRect(x, y, cell, cell);
+    }
+  }
+}
+
+function fillCard(card, result, title, truth) {
+  const frame = card.querySelector(".frame"), body = card.querySelector(".body");
+  frame.textContent = ""; body.textContent = "";
+  if (result.error) {
+    body.append(el("div", "meta", title), el("p", "error", result.error));
+    return;
+  }
+  const img = new Image();
+  const canvas = document.createElement("canvas");
+  img.alt = title;
+  img.onload = () => drawHeatmap(canvas, result, img.naturalWidth, img.naturalHeight);
+  img.src = result.preview;
+  frame.append(img, canvas);
+
+  const c = result.confidence, [vText, vCls] = verdict(c);
+  const top = el("div", "top");
+  top.append(el("span", "pct " + vCls, pct(c)), el("span", "verdict " + vCls, vText));
+  const meter = el("div", "meter"), mark = el("i");
+  mark.style.left = (c * 100).toFixed(1) + "%"; meter.append(mark);
+  meter.setAttribute("role", "img"); meter.setAttribute("aria-label", `AI confidence ${pct(c)}`);
+  const scale = el("div", "scale"); scale.append(el("span", null, "Real"), el("span", null, "AI"));
+  body.append(top, meter, scale);
+
+  if (truth) {
+    const correct = (c >= 0.5) === (truth.label === "ai");
+    quizTotal++; if (correct) quizCorrect++;
+    updateScore();
+    const row = el("div", "truth");
+    const actual = el("span");
+    actual.append("Actually: ", el("b", truth.label, truth.label === "ai" ? `AI (${truth.source})` : "Real photo"));
+    row.append(actual, el("span", "badge " + (correct ? "ok" : "bad"), correct ? "Correct" : "Wrong"));
+    body.append(row);
+  }
+  const regions = result.regions.length;
+  body.append(el("div", "meta",
+    `${title} · ${result.width}×${result.height} · ${regions} region${regions > 1 ? "s" : ""} · ${result.ms} ms`));
+}
+
+function updateScore() {
+  $("score").textContent = "";
+  $("score").append("Model got ", el("b", null, `${quizCorrect} / ${quizTotal}`),
+    ` right (${pct(quizCorrect / quizTotal)}) on held-out images so far.`);
+}
+
+function enqueue(task) { queue = queue.then(task).catch(console.error); return queue; }
+
+async function postImage(file) {
+  const res = await fetch("/api/analyze", { method: "POST", body: file,
+    headers: { "Content-Type": "application/octet-stream" } });
+  return res.json();
+}
+
+function analyzeFiles(files) {
+  for (const file of files) {
+    const card = newCard(file.name || "Pasted image");
+    enqueue(async () => {
+      let result;
+      try { result = await postImage(file); } catch { result = { error: "Couldn't reach the model server." }; }
+      fillCard(card, result, file.name || "Pasted image");
+    });
+  }
+}
+
+async function runQuiz() {
+  $("quiz").disabled = true;
+  try {
+    const picks = await (await fetch(`/api/samples?kind=${$("kind").value}&n=${$("count").value}`)).json();
+    const cards = picks.map((p) => [p, newCard(p.name)]);
+    for (const [p, card] of cards) {
+      await enqueue(async () => {
+        let result;
+        try { result = await (await fetch(`/api/analyze-sample?id=${p.id}`)).json(); }
+        catch { result = { error: "Couldn't reach the model server." }; }
+        fillCard(card, result, p.name, result.error ? null : p);
+      });
+    }
+  } finally { $("quiz").disabled = false; }
+}
+
+const drop = $("drop"), fileInput = $("file");
+drop.addEventListener("click", () => fileInput.click());
+drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } });
+fileInput.addEventListener("change", () => { analyzeFiles(fileInput.files); fileInput.value = ""; });
+["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => analyzeFiles(e.dataTransfer.files));
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => { e.preventDefault(); if (e.target !== drop && !drop.contains(e.target)) analyzeFiles(e.dataTransfer.files); });
+window.addEventListener("paste", (e) => {
+  const files = [...e.clipboardData.items].filter((i) => i.type.startsWith("image/")).map((i) => i.getAsFile());
+  if (files.length) analyzeFiles(files);
+});
+$("quiz").addEventListener("click", runQuiz);
+$("heat").addEventListener("change", (e) => document.body.classList.toggle("heat", e.target.checked));
+$("clear").addEventListener("click", () => {
+  grid.textContent = ""; empty.hidden = false;
+  quizTotal = quizCorrect = 0; $("score").textContent = "No test images scored yet.";
+});
+loadInfo();
+</script>
+</body>
+</html>
