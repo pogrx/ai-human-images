@@ -19,7 +19,9 @@ If you have an NVIDIA GPU, install the CUDA build of PyTorch first (see pytorch.
 
 ## 1. Add training data
 
-The images aren't stored in this repository. To rebuild the training set, download it from Hugging Face. The default is [Tiny-GenImage](https://huggingface.co/datasets/TheKernel01/Tiny-GenImage): 2 of its 4 validation shards, about 870 MB, which give 1,500 AI images from 6 generators and 1,707 real photos.
+The training images are included in this repository under `data/train` (about 415 MB): 1,500 AI images from 6 generators and 1,707 real photos. They come from [Tiny-GenImage](https://huggingface.co/datasets/TheKernel01/Tiny-GenImage), 2 of its 4 validation shards. The real photos are from ImageNet, whose terms don't allow public redistribution, so keep this repository private or remove `data/` before making it public.
+
+To rebuild or extend the set, download it from Hugging Face. Use `--shards 4` for the full validation split.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install pyarrow
