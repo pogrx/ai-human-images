@@ -111,7 +111,24 @@ This opens a local page at http://127.0.0.1:7860. It runs only on your computer;
 - **See the heatmap:** it shows which parts of the image looked AI (orange) or real (green).
 - **Quiz the model:** score random held-out images it never trained on, see whether each answer was right, and keep a running tally.
 
-Press Ctrl+C in the terminal to stop it. Use `--port` to pick another port, or `--checkpoint` to load a different trained model.
+### Insights: what the model relies on
+
+```powershell
+.\.venv\Scripts\python.exe analyze.py
+```
+
+This runs experiments on the held-out images (about 5 minutes on a CPU) and fills the app's **Insights** tab with charts:
+- **Damage tests:** how scores change when images are blurred, shrunk, re-compressed or given noise.
+- **Detail swap:** what the model does when one image's content is combined with another image's fine detail.
+- **Detail energy:** how much fine detail AI images have compared with real photos, at each scale.
+- **Fingerprints:** each generator's frequency fingerprint.
+- **Results by source:** the share of each generator's images flagged as AI.
+
+Run it again after retraining; the page warns you when its results are out of date.
+
+The main finding for the current model: it judges images almost entirely by their finest pixel-level detail, not by what they show. A 1-pixel blur drops its accuracy to a coin flip, and real photos that have been blurred or shrunk tend to be flagged as AI.
+
+Press Ctrl+C in the terminal to stop the app. Use `--port` to pick another port, or `--checkpoint` to load a different trained model.
 
 You can also call the detector from Python:
 
@@ -127,7 +144,8 @@ print(detector("photo.jpg"))   # e.g. 0.07
 - `data.py`: image loading, augmentation, cropping. Labels are `ai = 1`, `real = 0`.
 - `train.py`: training loop
 - `predict.py`: command-line and Python inference
-- `app.py`, `ui/index.html`: local web app for testing the model
+- `app.py`, `ui/index.html`, `ui/insights.html`: local web app for testing the model and viewing insights
+- `analyze.py`: experiments behind the Insights tab
 - `prepare_data.py`: downloads and unpacks the dataset
 
 ## Limitations

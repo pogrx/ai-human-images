@@ -29,7 +29,7 @@ from data import collect_samples, load_rgb, split_holdout
 from predict import Detector
 
 ROOT = Path(__file__).resolve().parent
-PAGE = ROOT / "ui" / "index.html"
+PAGES = {"/": ROOT / "ui" / "index.html", "/insights": ROOT / "ui" / "insights.html"}
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 PREVIEW_MAX_SIDE = 900
 
@@ -58,6 +58,7 @@ def preview_data_url(img):
 
 class App:
     def __init__(self, checkpoint, data_root):
+        self.checkpoint = Path(checkpoint)
         self.detector = Detector(checkpoint)
         self.lock = threading.Lock()  # one inference at a time
         self.samples = held_out_samples(self.detector.info, data_root)
@@ -81,6 +82,15 @@ class App:
             "held_out": {"ai": sum(1 for _, l in self.samples if l == 1),
                          "real": sum(1 for _, l in self.samples if l == 0)},
         }
+
+    def insights(self):
+        """Results written by analyze.py, or None if it hasn't been run for this model."""
+        path = self.checkpoint.with_name("insights.json")
+        if not path.is_file():
+            return None
+        result = json.loads(path.read_text())
+        result["stale"] = abs(result["model"]["checkpoint_mtime"] - self.checkpoint.stat().st_mtime) > 1
+        return result
 
     def pick_samples(self, kind, n):
         pool = [i for i, (_, label) in enumerate(self.samples)
@@ -107,8 +117,8 @@ def make_handler(app):
         def do_GET(self):
             url = urlparse(self.path)
             query = parse_qs(url.query)
-            if url.path == "/":
-                body = PAGE.read_bytes()
+            if url.path in PAGES:
+                body = PAGES[url.path].read_bytes()
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -116,6 +126,11 @@ def make_handler(app):
                 self.wfile.write(body)
             elif url.path == "/api/info":
                 self.send_json(app.info())
+            elif url.path == "/api/insights":
+                result = app.insights()
+                if result is None:
+                    return self.send_json({"error": "No insights for this model yet."}, HTTPStatus.NOT_FOUND)
+                self.send_json(result)
             elif url.path == "/api/samples":
                 kind = query.get("kind", ["mixed"])[0]
                 if kind not in ("mixed", "ai", "real"):
