@@ -109,17 +109,28 @@ class EvalTransform:
         return to_tensor(img.crop((left, top, left + self.crop_size, top + self.crop_size)))
 
 
-def multi_crops(img, crop_size=256, max_crops=9):
-    """Up to ``max_crops`` native-resolution crops on an even grid covering the image."""
+def multi_crops(img, crop_size=256, max_crops=9, return_boxes=False):
+    """Up to ``max_crops`` native-resolution crops on an even grid covering the image.
+
+    With ``return_boxes=True`` also returns each crop's (left, top, right, bottom)
+    box in the original image's coordinates (clipped to the image if it was padded).
+    """
+    orig_w, orig_h = img.size
     img = pad_to(img, crop_size)
     w, h = img.size
+    off_x, off_y = (w - orig_w) // 2, (h - orig_h) // 2  # pad_to centres the image
     n = max(1, int(max_crops ** 0.5))
     nx = min(n, max(1, w // crop_size + (w % crop_size > 0)))
     ny = min(n, max(1, h // crop_size + (h % crop_size > 0)))
     xs = np.linspace(0, w - crop_size, nx).round().astype(int) if nx > 1 else [(w - crop_size) // 2]
     ys = np.linspace(0, h - crop_size, ny).round().astype(int) if ny > 1 else [(h - crop_size) // 2]
-    crops = [to_tensor(img.crop((x, y, x + crop_size, y + crop_size))) for y in ys for x in xs]
-    return torch.stack(crops)
+    positions = [(int(x), int(y)) for y in ys for x in xs]
+    crops = torch.stack([to_tensor(img.crop((x, y, x + crop_size, y + crop_size))) for x, y in positions])
+    if not return_boxes:
+        return crops
+    boxes = [(max(0, x - off_x), max(0, y - off_y),
+              min(orig_w, x + crop_size - off_x), min(orig_h, y + crop_size - off_y)) for x, y in positions]
+    return crops, boxes
 
 
 def list_images(folder):
@@ -166,6 +177,15 @@ def collect_samples(root):
             f"No class folders found in {root}. Expected subfolders named like "
             f"'ai'/'fake'/'1_fake' (AI) and 'real'/'0_real'/'authentic' (real).")
     return samples
+
+
+def split_holdout(samples, val_fraction=0.15, seed=0):
+    """Deterministically split samples into (train, val). The same seed always
+    holds out the same images, so they can be found again after training."""
+    samples = list(samples)
+    random.Random(seed).shuffle(samples)
+    n_val = max(2, int(len(samples) * val_fraction))
+    return samples[n_val:], samples[:n_val]
 
 
 def check_readable(samples):

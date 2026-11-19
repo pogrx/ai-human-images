@@ -31,6 +31,7 @@ class Detector:
         ckpt = torch.load(checkpoint, map_location=self.device, weights_only=True)
         if ckpt.get("class_to_label", {}).get("ai") != 1:
             raise ValueError("Checkpoint label mapping is not ai=1; refusing to report inverted scores.")
+        self.info = {k: v for k, v in ckpt.items() if k != "state_dict"}  # arch, epoch, val_metrics, split...
         self.crop_size = ckpt["crop_size"]
         self.max_crops = max_crops
         self.model = build_model(ckpt["arch"], pretrained=False).to(self.device)
@@ -44,8 +45,18 @@ class Detector:
         Scores several native-resolution crops and averages them, so the whole
         image is considered without resizing away fine pixel detail.
         """
-        crops = multi_crops(img, self.crop_size, self.max_crops).to(self.device)
-        return torch.sigmoid(self.model(crops)).mean().item()
+        return self.analyze(img)["confidence"]
+
+    @torch.no_grad()
+    def analyze(self, img):
+        """Like ``score_image`` but also returns each crop's box and score:
+        {"confidence": float, "regions": [{"box": (l, t, r, b), "score": float}, ...]}."""
+        crops, boxes = multi_crops(img, self.crop_size, self.max_crops, return_boxes=True)
+        scores = torch.sigmoid(self.model(crops.to(self.device))).tolist()
+        return {
+            "confidence": sum(scores) / len(scores),
+            "regions": [{"box": box, "score": s} for box, s in zip(boxes, scores)],
+        }
 
     def __call__(self, path):
         return self.score_image(load_rgb(path))

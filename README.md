@@ -100,7 +100,20 @@ Output is one line per image:
 
 For large images, several native-resolution crops (up to 9, set with `--max-crops`) are scored and averaged.
 
-You can also call it from Python:
+## 4. Try it in your browser
+
+```powershell
+.\.venv\Scripts\python.exe app.py
+```
+
+This opens a local page at http://127.0.0.1:7860. It runs only on your computer; nothing is uploaded anywhere. There you can:
+- **Score your own images:** drag and drop, pick files, or paste with Ctrl+V. Each image gets a 0–100% AI score and a verdict.
+- **See the heatmap:** it shows which parts of the image looked AI (orange) or real (green).
+- **Quiz the model:** score random held-out images it never trained on, see whether each answer was right, and keep a running tally.
+
+Press Ctrl+C in the terminal to stop it. Use `--port` to pick another port, or `--checkpoint` to load a different trained model.
+
+You can also call the detector from Python:
 
 ```python
 from predict import Detector
@@ -114,6 +127,8 @@ print(detector("photo.jpg"))   # e.g. 0.07
 - `data.py`: image loading, augmentation, cropping. Labels are `ai = 1`, `real = 0`.
 - `train.py`: training loop
 - `predict.py`: command-line and Python inference
+- `app.py`, `ui/index.html`: local web app for testing the model
+- `prepare_data.py`: downloads and unpacks the dataset
 
 ## Limitations
 

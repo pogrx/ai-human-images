@@ -23,7 +23,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from data import (CLASS_TO_LABEL, EvalTransform, ImageDataset, TrainTransform, check_readable,
-                  collect_samples)
+                  collect_samples, split_holdout)
 from model import ARCHITECTURES, build_model
 
 
@@ -88,10 +88,8 @@ def main():
         val_samples = collect_samples(val_dir)
         print(f"validating on {val_dir}")
     else:
-        random.shuffle(train_samples)
-        n_val = max(2, int(len(train_samples) * args.val_fraction))
-        val_samples, train_samples = train_samples[:n_val], train_samples[n_val:]
-        print(f"No {data_root / 'val'} folder; holding out {n_val} training images for validation.")
+        train_samples, val_samples = split_holdout(train_samples, args.val_fraction, args.seed)
+        print(f"No {data_root / 'val'} folder; holding out {len(val_samples)} training images for validation.")
 
     print(f"checking {len(train_samples) + len(val_samples)} image files...")
     train_samples, bad_train = check_readable(train_samples)
@@ -159,6 +157,9 @@ def main():
                 "state_dict": model.state_dict(),
                 "class_to_label": CLASS_TO_LABEL,
                 "epoch": epoch,
+                # How validation images were chosen, so tools (e.g. app.py) can find held-out images.
+                "split": {"seed": args.seed, "val_fraction": args.val_fraction,
+                          "val_dir": str(val_dir) if val_dir is not None else None},
                 "val_metrics": m,
             }, out_path)
             print(f"  saved best model -> {out_path}")

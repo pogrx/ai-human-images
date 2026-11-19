@@ -12,3 +12,6 @@ downloads/
 
 # Prediction outputs
 results*.csv
+
+# Local editor/assistant settings
+.claude/
