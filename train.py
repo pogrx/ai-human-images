@@ -30,19 +30,14 @@ from model import ARCHITECTURES, build_model
 def roc_auc(labels, scores):
     """Area under the ROC curve (probability a random AI image outscores a random real one)."""
     labels, scores = np.asarray(labels), np.asarray(scores)
-    pos, neg = scores[labels == 1], scores[labels == 0]
-    if len(pos) == 0 or len(neg) == 0:
+    n_pos, n_neg = int((labels == 1).sum()), int((labels == 0).sum())
+    if n_pos == 0 or n_neg == 0:
         return float("nan")
-    order = np.argsort(np.concatenate([pos, neg]), kind="mergesort")
-    ranks = np.empty(len(order))
-    ranks[order] = np.arange(1, len(order) + 1)
-    # average ranks for ties
-    all_scores = np.concatenate([pos, neg])
-    for value in np.unique(all_scores):
-        tie = all_scores == value
-        if tie.sum() > 1:
-            ranks[tie] = ranks[tie].mean()
-    return (ranks[: len(pos)].sum() - len(pos) * (len(pos) + 1) / 2) / (len(pos) * len(neg))
+    # Rank all scores (ties share their average rank), then use the Mann-Whitney U statistic.
+    _, inverse, counts = np.unique(scores, return_inverse=True, return_counts=True)
+    ends = np.cumsum(counts)
+    ranks = (ends - (counts - 1) / 2)[inverse]
+    return (ranks[labels == 1].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
 
 
 def evaluate(model, loader, criterion, device):

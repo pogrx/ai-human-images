@@ -35,6 +35,7 @@ import argparse
 import io
 import json
 import random
+import re
 import sys
 import urllib.request
 from collections import Counter
@@ -60,7 +61,7 @@ def download(url, dest):
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
     print(f"downloading {url}")
-    with urllib.request.urlopen(url) as resp, open(tmp, "wb") as f:
+    with urllib.request.urlopen(url, timeout=60) as resp, open(tmp, "wb") as f:
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
         while chunk := resp.read(1 << 20):
@@ -171,7 +172,8 @@ def unpack(parquet_path, out_dir, tag, min_size, jpeg_settings, rng):
             buf = io.BytesIO()
             img.convert("RGB").save(buf, format="JPEG", quality=quality, subsampling=subsampling)
             data, ext = buf.getvalue(), ".jpg"
-        dest = out_dir / cls / f"{gen}_{tag}_{row:06d}{ext}"
+        safe_gen = re.sub(r"[^A-Za-z0-9.-]+", "-", str(gen)).strip("-.") or "unknown"
+        dest = out_dir / cls / f"{safe_gen}_{tag}_{row:06d}{ext}"
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         counts[cls] += 1

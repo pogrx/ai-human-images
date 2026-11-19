@@ -59,29 +59,32 @@ def conv_bn(c_in, c_out, stride=1):
 class ForensicCNN(nn.Module):
     """Compact, fully convolutional detector that trains reasonably on a CPU.
 
-    The first layers run at full resolution (no pooling) so pixel-level
-    artifacts survive; global average + max pooling at the end lets it accept
-    any input size.
+    The first layer runs at full resolution (no pooling) on the pixels plus
+    their high-pass residuals, so pixel-level artifacts survive; later layers
+    downsample with strided convolutions rather than pooling. Channel counts
+    stay small while the feature maps are large, so a training step is cheaper
+    than ResNet-18's on a CPU. Global average + max pooling at the end
+    lets it accept any input size.
     """
 
-    def __init__(self, width=32):
+    def __init__(self, width=16):
         super().__init__()
         w = width
         self.highpass = HighPassResiduals()
         self.features = nn.Sequential(
-            conv_bn(3 + 9, w),
-            conv_bn(w, w),
-            conv_bn(w, 2 * w, stride=2),
+            conv_bn(3 + 9, w),                 # full resolution
+            conv_bn(w, 2 * w, stride=2),       # 1/2
             conv_bn(2 * w, 2 * w),
-            conv_bn(2 * w, 4 * w, stride=2),
+            conv_bn(2 * w, 4 * w, stride=2),   # 1/4
             conv_bn(4 * w, 4 * w),
-            conv_bn(4 * w, 8 * w, stride=2),
+            conv_bn(4 * w, 8 * w, stride=2),   # 1/8
             conv_bn(8 * w, 8 * w),
-            conv_bn(8 * w, 8 * w, stride=2),
+            conv_bn(8 * w, 16 * w, stride=2),  # 1/16
+            conv_bn(16 * w, 16 * w),
         )
         self.head = nn.Sequential(
             nn.Dropout(0.3),
-            nn.Linear(16 * w, 1),
+            nn.Linear(32 * w, 1),
         )
 
     def forward(self, x):
