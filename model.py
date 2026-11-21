@@ -118,6 +118,44 @@ class ResNetDetector(nn.Module):
 ARCHITECTURES = ("forensic", "resnet18")
 
 
+# ---------- per-dataset BatchNorm statistics ----------
+# BatchNorm layers keep running averages of their inputs to use at prediction time.
+# When one model learns from datasets with very different images (e.g. 32x32 and
+# 256x256 crops), a single shared average fits neither well. These helpers measure
+# separate averages for each dataset, so the right set can be swapped in per image.
+
+def bn_state(model):
+    """Copy of every BatchNorm layer's running mean and variance."""
+    out = {}
+    for name, m in model.named_modules():
+        if isinstance(m, nn.modules.batchnorm._BatchNorm):
+            out[f"{name}.running_mean"] = m.running_mean.detach().clone()
+            out[f"{name}.running_var"] = m.running_var.detach().clone()
+    return out
+
+
+def load_bn_state(model, state):
+    model.load_state_dict(state, strict=False)
+
+
+@torch.no_grad()
+def recalibrate_bn(model, batches):
+    """Re-measure BatchNorm running stats from scratch on ``batches`` (iterable of input tensors).
+    Leaves the model in eval mode and returns the new stats."""
+    layers = [m for m in model.modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)]
+    momenta = [m.momentum for m in layers]
+    for m in layers:
+        m.reset_running_stats()
+        m.momentum = None  # plain average over all batches
+    model.train()
+    for x in batches:
+        model(x)
+    for m, mom in zip(layers, momenta):
+        m.momentum = mom
+    model.eval()
+    return bn_state(model)
+
+
 def build_model(arch, pretrained=True):
     if arch == "forensic":
         return ForensicCNN()

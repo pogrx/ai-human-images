@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlparse
 
 from PIL import Image, ImageOps
 
-from data import collect_samples, load_rgb, split_holdout
+from data import dataset_split, load_rgb
 from predict import Detector
 
 ROOT = Path(__file__).resolve().parent
@@ -34,17 +34,24 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 PREVIEW_MAX_SIDE = 900
 
 
-def held_out_samples(info, data_root):
-    """Images the checkpoint was validated on but never trained on: [(path, label)]."""
-    split = info.get("split") or {"seed": 0, "val_fraction": 0.15, "val_dir": None}
-    if split.get("val_dir") and Path(split["val_dir"]).is_dir():
-        return collect_samples(split["val_dir"])
-    data_root = Path(data_root)
-    train_dir = data_root / "train" if (data_root / "train").is_dir() else data_root
-    if not train_dir.is_dir():
-        return []
-    _, val = split_holdout(collect_samples(train_dir), split["val_fraction"], split["seed"])
-    return val
+def held_out_by_dataset(info, data_roots=None):
+    """Images the checkpoint was validated on but never trained on, per dataset:
+    {dataset name: [(path, label)]}. Defaults to the datasets the model was trained on."""
+    split = info.get("split") or {}
+    seed, fraction = split.get("seed", 0), split.get("val_fraction", 0.15)
+    roots = data_roots or split.get("datasets") or ["data"]
+    out = {}
+    for root in roots:
+        root = Path(root)
+        root = root if root.is_absolute() else ROOT / root
+        if root.is_dir():
+            out[root.name] = dataset_split(root, fraction, seed)[1]
+    return out
+
+
+def held_out_samples(info, data_roots=None):
+    """All held-out images across datasets: [(path, label)]."""
+    return [s for samples in held_out_by_dataset(info, data_roots).values() for s in samples]
 
 
 def preview_data_url(img):
@@ -57,12 +64,15 @@ def preview_data_url(img):
 
 
 class App:
-    def __init__(self, checkpoint, data_root):
+    def __init__(self, checkpoint, data_roots=None):
         self.checkpoint = Path(checkpoint)
         self.detector = Detector(checkpoint)
         self.lock = threading.Lock()  # one inference at a time
-        self.samples = held_out_samples(self.detector.info, data_root)
-        print(f"loaded {checkpoint}; {len(self.samples)} held-out test images available")
+        by_dataset = held_out_by_dataset(self.detector.info, data_roots)
+        # (path, label, dataset name)
+        self.samples = [(p, l, name) for name, samples in by_dataset.items() for p, l in samples]
+        print(f"loaded {checkpoint}; held-out test images: "
+              + ", ".join(f"{name} {len(s)}" for name, s in by_dataset.items()))
 
     def analyze(self, img):
         img = ImageOps.exif_transpose(img)  # match how phones/browsers orient photos
@@ -76,11 +86,18 @@ class App:
     def info(self):
         i = self.detector.info
         m = i.get("val_metrics", {})
+        names = list(dict.fromkeys(name for _, _, name in self.samples))
+        per = m.get("per_dataset", {})
         return {
             "arch": i.get("arch"), "epoch": i.get("epoch"), "crop_size": i.get("crop_size"),
             "val_acc": m.get("acc"), "val_auc": m.get("auc"),
-            "held_out": {"ai": sum(1 for _, l in self.samples if l == 1),
-                         "real": sum(1 for _, l in self.samples if l == 0)},
+            "held_out": {"ai": sum(1 for _, l, _ in self.samples if l == 1),
+                         "real": sum(1 for _, l, _ in self.samples if l == 0)},
+            "datasets": [{"name": n,
+                          "ai": sum(1 for _, l, d in self.samples if d == n and l == 1),
+                          "real": sum(1 for _, l, d in self.samples if d == n and l == 0),
+                          "val_acc": per.get(n, {}).get("acc"), "val_auc": per.get(n, {}).get("auc")}
+                         for n in names],
         }
 
     def insights(self):
@@ -92,11 +109,21 @@ class App:
         result["stale"] = abs(result["model"]["checkpoint_mtime"] - self.checkpoint.stat().st_mtime) > 1
         return result
 
-    def pick_samples(self, kind, n):
-        pool = [i for i, (_, label) in enumerate(self.samples)
-                if kind == "mixed" or label == (1 if kind == "ai" else 0)]
-        picks = random.sample(pool, min(n, len(pool)))
-        return [{"id": i, "label": "ai" if self.samples[i][1] else "real",
+    def pick_samples(self, kind, n, dataset="any"):
+        """Random held-out images. With dataset="any", each pick first chooses a dataset
+        at random, so a huge dataset doesn't crowd out a small one."""
+        pools = {}
+        for i, (_, label, name) in enumerate(self.samples):
+            if (dataset in ("any", name)) and (kind == "mixed" or label == (1 if kind == "ai" else 0)):
+                pools.setdefault(name, []).append(i)
+        picks = []
+        while len(picks) < n and pools:
+            name = random.choice(list(pools))
+            pool = pools[name]
+            picks.append(pool.pop(random.randrange(len(pool))))
+            if not pool:
+                del pools[name]
+        return [{"id": i, "label": "ai" if self.samples[i][1] else "real", "dataset": self.samples[i][2],
                  "source": self.samples[i][0].name.split("_")[0], "name": self.samples[i][0].name}
                 for i in picks]
 
@@ -136,10 +163,10 @@ def make_handler(app):
                 if kind not in ("mixed", "ai", "real"):
                     return self.send_json({"error": "kind must be mixed, ai or real"}, HTTPStatus.BAD_REQUEST)
                 n = max(1, min(24, int(query.get("n", ["6"])[0])))
-                self.send_json(app.pick_samples(kind, n))
+                self.send_json(app.pick_samples(kind, n, query.get("dataset", ["any"])[0]))
             elif url.path == "/api/analyze-sample":
                 try:
-                    path, _ = app.samples[int(query["id"][0])]
+                    path, _, _ = app.samples[int(query["id"][0])]
                 except (KeyError, ValueError, IndexError):
                     return self.send_json({"error": "unknown sample"}, HTTPStatus.NOT_FOUND)
                 self.send_json(app.analyze(load_rgb(path)))
@@ -167,7 +194,8 @@ def make_handler(app):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--checkpoint", default=str(ROOT / "checkpoints" / "detector.pt"))
-    p.add_argument("--data", default=str(ROOT / "data"), help="dataset folder, used to find held-out test images")
+    p.add_argument("--data", nargs="+", default=None,
+                   help="dataset folders for held-out test images (default: the ones the model was trained on)")
     p.add_argument("--port", type=int, default=7860)
     p.add_argument("--no-browser", action="store_true", help="don't open a browser window")
     args = p.parse_args()

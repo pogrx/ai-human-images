@@ -112,6 +112,9 @@
       <h2>Quiz the model</h2>
       <p id="heldout-desc">Score held-out images the model never trained on and check its answers.</p>
       <div class="row">
+        <select id="dataset" aria-label="Which dataset" hidden>
+          <option value="any">All datasets</option>
+        </select>
         <select id="kind" aria-label="Which images">
           <option value="mixed">Mixed AI and real</option>
           <option value="ai">AI images only</option>
@@ -169,8 +172,15 @@ async function loadInfo() {
     const info = await (await fetch("/api/info")).json();
     const chips = $("chips"); chips.textContent = "";
     const add = (label, value) => { const c = el("span", "chip"); c.append(label + " "); c.append(el("b", null, value)); chips.append(c); };
-    if (info.val_acc != null) add("Held-out accuracy", pct(info.val_acc));
-    if (info.val_auc != null) add("AUC", info.val_auc.toFixed(3));
+    const perDataset = (info.datasets || []).filter((d) => d.val_acc != null);
+    if (perDataset.length > 1) perDataset.forEach((d) => add(`${d.name} accuracy`, pct(d.val_acc)));
+    else if (info.val_acc != null) add("Held-out accuracy", pct(info.val_acc));
+    if (info.val_auc != null) add(perDataset.length > 1 ? "Avg AUC" : "AUC", info.val_auc.toFixed(3));
+    if ((info.datasets || []).length > 1) {
+      const sel = $("dataset");
+      info.datasets.forEach((d) => sel.append(new Option(`${d.name} (${d.ai + d.real})`, d.name)));
+      sel.hidden = false;
+    }
     add("Model", info.arch);
     add("Epoch", String(info.epoch));
     const n = info.held_out.ai + info.held_out.real;
@@ -226,6 +236,9 @@ function fillCard(card, result, title, truth) {
   const img = new Image();
   const canvas = document.createElement("canvas");
   img.alt = title;
+  if (Math.max(result.width, result.height) < 160) {  // tiny images: show crisp pixels, not blur
+    img.style.imageRendering = canvas.style.imageRendering = "pixelated";
+  }
   img.onload = () => drawHeatmap(canvas, result, img.naturalWidth, img.naturalHeight);
   img.src = result.preview;
   frame.append(img, canvas);
@@ -245,7 +258,8 @@ function fillCard(card, result, title, truth) {
     updateScore();
     const row = el("div", "truth");
     const actual = el("span");
-    actual.append("Actually: ", el("b", truth.label, truth.label === "ai" ? `AI (${truth.source})` : "Real photo"));
+    actual.append("Actually: ", el("b", truth.label, truth.label === "ai" ? `AI (${truth.source})` : "Real photo"),
+      truth.dataset ? ` · ${truth.dataset}` : "");
     row.append(actual, el("span", "badge " + (correct ? "ok" : "bad"), correct ? "Correct" : "Wrong"));
     body.append(row);
   }
@@ -282,7 +296,8 @@ function analyzeFiles(files) {
 async function runQuiz() {
   $("quiz").disabled = true;
   try {
-    const picks = await (await fetch(`/api/samples?kind=${$("kind").value}&n=${$("count").value}`)).json();
+    const picks = await (await fetch(
+      `/api/samples?kind=${$("kind").value}&n=${$("count").value}&dataset=${encodeURIComponent($("dataset").value)}`)).json();
     const cards = picks.map((p) => [p, newCard(p.name)]);
     for (const [p, card] of cards) {
       await enqueue(async () => {

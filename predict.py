@@ -11,13 +11,14 @@ Examples:
 
 import argparse
 import csv
+import math
 import sys
 from pathlib import Path
 
 import torch
 
 from data import IMAGE_EXTENSIONS, list_images, load_rgb, multi_crops
-from model import build_model
+from model import build_model, load_bn_state
 
 
 class Detector:
@@ -31,12 +32,26 @@ class Detector:
         ckpt = torch.load(checkpoint, map_location=self.device, weights_only=True)
         if ckpt.get("class_to_label", {}).get("ai") != 1:
             raise ValueError("Checkpoint label mapping is not ai=1; refusing to report inverted scores.")
-        self.info = {k: v for k, v in ckpt.items() if k != "state_dict"}  # arch, epoch, val_metrics, split...
+        self.info = {k: v for k, v in ckpt.items() if k not in ("state_dict", "bn_stats")}
         self.crop_size = ckpt["crop_size"]
+        # Older checkpoints were trained only on large crops: pad small images up to crop_size.
+        self.min_crop = ckpt.get("min_crop", self.crop_size)
         self.max_crops = max_crops
         self.model = build_model(ckpt["arch"], pretrained=False).to(self.device)
         self.model.load_state_dict(ckpt["state_dict"])
         self.model.eval()
+        # Per-dataset BatchNorm stats (multi-dataset checkpoints): [(crop size, stats)].
+        self.bn_sets = [(s["crop"], s["state"]) for s in ckpt.get("bn_stats", {}).values()]
+        self._bn_crop = None
+
+    def use_bn_for(self, crop):
+        """Load the BatchNorm stats of the dataset whose training crop is closest to ``crop``."""
+        if not self.bn_sets:
+            return
+        best_crop, state = min(self.bn_sets, key=lambda s: abs(math.log(crop / s[0])))
+        if best_crop != self._bn_crop:
+            load_bn_state(self.model, state)
+            self._bn_crop = best_crop
 
     @torch.no_grad()
     def score_image(self, img):
@@ -47,11 +62,18 @@ class Detector:
         """
         return self.analyze(img)["confidence"]
 
+    def crop_for(self, img):
+        """Crop size for an image: the training crop, or the image's own size if smaller
+        (small images were trained at their own size, not padded), but never below min_crop."""
+        return min(self.crop_size, max(self.min_crop, min(img.size)))
+
     @torch.no_grad()
     def analyze(self, img):
         """Like ``score_image`` but also returns each crop's box and score:
         {"confidence": float, "regions": [{"box": (l, t, r, b), "score": float}, ...]}."""
-        crops, boxes = multi_crops(img, self.crop_size, self.max_crops, return_boxes=True)
+        crop = self.crop_for(img)
+        self.use_bn_for(crop)
+        crops, boxes = multi_crops(img, crop, self.max_crops, return_boxes=True)
         scores = torch.sigmoid(self.model(crops.to(self.device))).tolist()
         return {
             "confidence": sum(scores) / len(scores),

@@ -188,12 +188,60 @@ def split_holdout(samples, val_fraction=0.15, seed=0):
     return samples[n_val:], samples[:n_val]
 
 
-def check_readable(samples):
+VAL_FOLDER_NAMES = ("val", "valid", "validation", "test")
+MIN_CROP = 32
+
+
+def dataset_split(root, val_fraction=0.15, seed=0):
+    """(train_samples, val_samples) for one dataset folder.
+
+    Uses ``root/train`` (or ``root`` itself) for training. If the dataset has
+    its own val/valid/validation/test folder, that is the validation set;
+    otherwise a fixed ``val_fraction`` of the images is held out.
+    """
+    root = Path(root)
+    train_dir = root / "train" if (root / "train").is_dir() else root
+    val_dir = next((root / n for n in VAL_FOLDER_NAMES if (root / n).is_dir()), None)
+    if val_dir is None:
+        return split_holdout(collect_samples(train_dir), val_fraction, seed)
+    train = [s for s in collect_samples(train_dir) if val_dir not in s[0].parents]
+    return train, collect_samples(val_dir)
+
+
+def pick_crop_size(samples, max_crop=256, n=200, seed=0):
+    """Training crop size for a dataset: ``max_crop``, or smaller if the images are.
+
+    Uses the 10th-percentile shorter side of a random sample, rounded down to a
+    multiple of 8 (at least 32), so small images are trained at their own size
+    instead of being padded up.
+    """
+    rng = random.Random(seed)
+    sides = []
+    for path, _ in rng.sample(samples, min(n, len(samples))):
+        try:
+            with Image.open(path) as img:
+                sides.append(min(img.size))
+        except Exception:
+            pass
+    if not sides:
+        return max_crop
+    p10 = sorted(sides)[len(sides) // 10]
+    crop = min(max_crop, p10)
+    return max(MIN_CROP, crop - crop % 8)
+
+
+def check_readable(samples, spot_check=None, seed=0):
     """Split samples into (readable, unreadable) by attempting to open each file.
 
     Catches Git LFS pointer files (small text stubs left when a repository is
-    cloned without ``git lfs pull``) as well as corrupt images.
+    cloned without ``git lfs pull``) as well as corrupt images. With
+    ``spot_check=N``, large datasets are checked on N random files first and
+    only fully checked if that sample turns up a problem.
     """
+    if spot_check and len(samples) > spot_check:
+        sample = random.Random(seed).sample(samples, spot_check)
+        if not check_readable(sample)[1]:
+            return list(samples), []
     good, bad = [], []
     for path, label in samples:
         try:

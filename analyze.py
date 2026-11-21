@@ -22,6 +22,7 @@ import argparse
 import base64
 import io
 import json
+import random
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -31,7 +32,7 @@ import torch
 from PIL import Image, ImageFilter
 
 from app import held_out_samples
-from data import collect_samples, load_rgb, pad_to, to_tensor
+from data import collect_samples, load_rgb, pad_to, pick_crop_size, to_tensor
 from predict import Detector
 from train import roc_auc
 
@@ -163,18 +164,25 @@ def spectrum_png(power):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--checkpoint", default=str(ROOT / "checkpoints" / "detector.pt"))
-    p.add_argument("--data", default=str(ROOT / "data"))
+    p.add_argument("--data", default=str(ROOT / "data"), help="the one dataset folder to analyse")
+    p.add_argument("--max-images", type=int, default=2000, help="cap on held-out images used (random sample)")
     p.add_argument("--spectrum-images", type=int, default=250, help="images per group for the fingerprints")
     p.add_argument("--out", default=None, help="default: insights.json next to the checkpoint")
     args = p.parse_args()
 
     start = time.time()
     det = Detector(args.checkpoint)
-    model, size = det.model, det.crop_size
-    samples = held_out_samples(det.info, args.data)
+    model = det.model
+    samples = held_out_samples(det.info, [args.data])
     if not samples:
         raise SystemExit("No held-out images found; check --data.")
-    print(f"{len(samples)} held-out images")
+    if len(samples) > args.max_images:
+        samples = random.Random(0).sample(samples, args.max_images)
+    # Same crop size the dataset was trained at (small-image datasets use their own size).
+    trained_crops = {d["name"]: d["crop"] for d in det.info.get("datasets", [])}
+    size = trained_crops.get(Path(args.data).name) or pick_crop_size(samples, det.crop_size)
+    det.use_bn_for(size)  # this dataset's own normalization stats, if the model has them
+    print(f"{len(samples)} held-out images from {Path(args.data).name}, {size}px crops")
     crops = [center_crop(load_rgb(path), size) for path, _ in samples]
     labels = np.array([label for _, label in samples])
     sources = [source_of(path) for path, _ in samples]
@@ -256,6 +264,7 @@ def main():
         "model": {"arch": det.info.get("arch"), "epoch": det.info.get("epoch"),
                   "val_acc": m.get("acc"), "val_auc": m.get("auc"),
                   "checkpoint_mtime": Path(args.checkpoint).stat().st_mtime},
+        "dataset": Path(args.data).name, "crop": size,
         "held_out": {"ai": int((labels == 1).sum()), "real": int((labels == 0).sum())},
         "damage": damage, "swap": swap, "generators": generators, "hist_bins": bins.round(2).tolist(),
         "fingerprints": fingerprints, "energy": energy,

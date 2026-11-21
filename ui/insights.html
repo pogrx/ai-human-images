@@ -241,7 +241,8 @@ async function load() {
   const AI = css("--s-ai"), REAL = css("--s-real");
   root.innerHTML = "";
   document.getElementById("lede").textContent =
-    `Experiments on ${d.held_out.ai + d.held_out.real} held-out images the model never trained on ` +
+    `Experiments on ${d.held_out.ai + d.held_out.real} held-out images ` +
+    (d.dataset ? `from the ${d.dataset} dataset ` : "") + `that the model never trained on ` +
     `(${d.held_out.ai} AI, ${d.held_out.real} real). Model: ${d.model.arch}, epoch ${d.model.epoch}. Measured ${d.created}.`;
   if (d.stale) root.append(h("div", { class: "warn" },
     "The model has been retrained since these results were measured. Run analyze.py again to refresh them."));
