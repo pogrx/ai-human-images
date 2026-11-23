@@ -40,7 +40,7 @@ class Detector:
         self.model = build_model(ckpt["arch"], pretrained=False).to(self.device)
         self.model.load_state_dict(ckpt["state_dict"])
         self.model.eval()
-        # Per-dataset BatchNorm stats (multi-dataset checkpoints): [(crop size, stats)].
+        # BatchNorm stats per training crop size (multi-dataset checkpoints): [(crop size, stats)].
         self.bn_sets = [(s["crop"], s["state"]) for s in ckpt.get("bn_stats", {}).values()]
         self._bn_crop = None
 

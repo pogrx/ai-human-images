@@ -18,12 +18,15 @@ One model learns from all datasets together, with the datasets kept apart:
     images are trained at their own size (e.g. 32x32) rather than padded up.
   * Each dataset gets the same number of batches per epoch, so a huge dataset
     of tiny images can't drown out a small dataset of large ones. Batches of
-    small images hold more images, since each one is cheaper.
+    small images hold more images, since each one is cheaper. Small datasets
+    are cycled through several times per epoch.
   * Every batch is half AI, half real.
+  * BatchNorm statistics are measured separately for each crop size (datasets
+    sharing a crop size are pooled), and saved for prediction.
   * Validation is reported for each dataset separately.
 
 Examples:
-    python train.py                              # uses data/ and data-lowqual/
+    python train.py                              # uses data, data-lowqual, data-new, data-new-new
     python train.py --data data --epochs 20      # one dataset only
 """
 
@@ -42,7 +45,7 @@ from data import (CLASS_TO_LABEL, MIN_CROP, EvalTransform, ImageDataset, TrainTr
                   dataset_split, pick_crop_size)
 from model import ARCHITECTURES, build_model, recalibrate_bn
 
-DEFAULT_DATASETS = ["data", "data-lowqual"]
+DEFAULT_DATASETS = ["data", "data-lowqual", "data-new", "data-new-new"]
 
 
 def roc_auc(labels, scores):
@@ -142,8 +145,10 @@ def main():
     p.add_argument("--lr", type=float, default=None, help="default: 1e-3 forensic, 3e-4 resnet18")
     p.add_argument("--val-fraction", type=float, default=0.15, help="used for datasets without a val folder")
     p.add_argument("--max-val", type=int, default=2000, help="validation images scored per dataset each epoch")
+    p.add_argument("--steps", type=int, default=None,
+                   help="batches per dataset per epoch (default: one pass over the largest full-size dataset)")
     p.add_argument("--bn-images", type=int, default=1024,
-                   help="training images per dataset used to measure its own BatchNorm stats each epoch")
+                   help="training images per dataset used to measure BatchNorm stats each epoch")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--out", default="checkpoints/detector.pt")
     p.add_argument("--seed", type=int, default=0)
@@ -182,19 +187,26 @@ def main():
         real = [i for i, (_, label) in enumerate(d["train"]) if label == 0]
         groups.append((offset, ai, real, d["batch"]))
         offset += len(d["train"])
-    # Steps per dataset per epoch: enough for one pass over the smallest dataset.
-    steps = max(1, min(math.ceil(len(d["train"]) / d["batch"]) for d in datasets))
+    # Steps per dataset per epoch: one pass over the largest dataset trained at the full crop size.
+    # Smaller datasets cycle (reshuffled each pass); the huge set of tiny images doesn't set the pace.
+    top_crop = max(d["crop"] for d in datasets)
+    steps = args.steps or max(math.ceil(len(d["train"]) / d["batch"]) for d in datasets if d["crop"] == top_crop)
     sampler = DatasetBatchSampler(groups, steps, args.seed)
     train_loader = DataLoader(ConcatDataset(parts), batch_sampler=sampler,
                               num_workers=args.workers, persistent_workers=args.workers > 0)
     val_loaders = {d["name"]: DataLoader(ImageDataset(d["val_eval"], EvalTransform(d["crop"])),
                                          batch_size=d["batch"], num_workers=args.workers)
                    for d in datasets}
-    # Training images used to measure each dataset's own BatchNorm statistics (see model.recalibrate_bn).
-    bn_loaders = {d["name"]: DataLoader(
-        ImageDataset(random.Random(args.seed + 1).sample(d["train"], min(args.bn_images, len(d["train"]))),
-                     EvalTransform(d["crop"])), batch_size=d["batch"], num_workers=args.workers)
-        for d in datasets}
+    # BatchNorm statistics are measured per crop size (see model.recalibrate_bn), pooling the datasets
+    # that share one, because prediction picks stats by the image's crop size and can't tell datasets apart.
+    bn_groups = {}
+    for d in datasets:
+        bn_groups.setdefault(d["crop"], []).append(d)
+    bn_loaders = {crop: DataLoader(
+        ImageDataset([s for d in group for s in
+                      random.Random(args.seed + 1).sample(d["train"], min(args.bn_images, len(d["train"])))],
+                     EvalTransform(crop)), batch_size=group[0]["batch"], num_workers=args.workers)
+        for crop, group in bn_groups.items()}
     print(f"{len(sampler)} batches per epoch ({steps} per dataset) | device: {device}")
 
     model = build_model(args.arch, pretrained=not args.no_pretrained).to(device)
@@ -234,13 +246,15 @@ def main():
             scheduler.step()
             running += loss.item()
             seen += 1
-        # Score each dataset with BatchNorm stats measured on that dataset alone.
+        # Score each dataset with the BatchNorm stats of its crop size, exactly as predict.py will.
         bn_stats, per = {}, {}
-        for d in datasets:
-            name = d["name"]
-            stats = recalibrate_bn(model, (x.to(device) for x, _ in bn_loaders[name]))
-            bn_stats[name] = {"crop": d["crop"], "state": {k: v.cpu() for k, v in stats.items()}}
-            per[name] = evaluate(model, val_loaders[name], criterion, device)
+        for crop, group in bn_groups.items():
+            stats = recalibrate_bn(model, (x.to(device) for x, _ in bn_loaders[crop]))
+            bn_stats[f"crop{crop}"] = {"crop": crop, "datasets": [d["name"] for d in group],
+                                       "state": {k: v.cpu() for k, v in stats.items()}}
+            for d in group:
+                per[d["name"]] = evaluate(model, val_loaders[d["name"]], criterion, device)
+        per = {d["name"]: per[d["name"]] for d in datasets}
         # Overall = average over datasets, so each dataset counts equally.
         overall = {k: float(np.mean([m[k] for m in per.values()])) for k in ("loss", "acc", "auc")}
         print(f"epoch {epoch:3d}/{args.epochs} | train loss {running / seen:.4f} | "
@@ -264,7 +278,7 @@ def main():
                 "datasets": [{"name": d["name"], "root": d["root"], "crop": d["crop"],
                               "n_train": len(d["train"]), "n_val": len(d["val"])} for d in datasets],
                 "val_metrics": {**overall, "per_dataset": per},
-                # Per-dataset BatchNorm stats; predict.Detector picks the set whose crop size fits the image.
+                # BatchNorm stats per crop size; predict.Detector picks the set whose crop size fits the image.
                 "bn_stats": bn_stats,
             }, out_path)
             print(f"  saved best model -> {out_path}")
