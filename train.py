@@ -26,7 +26,7 @@ One model learns from all datasets together, with the datasets kept apart:
   * Validation is reported for each dataset separately.
 
 Examples:
-    python train.py                              # uses data, data-lowqual, data-new, data-new-new
+    python train.py                              # uses data, data-lowqual, data-new-new
     python train.py --data data --epochs 20      # one dataset only
 """
 
@@ -45,7 +45,9 @@ from data import (CLASS_TO_LABEL, MIN_CROP, EvalTransform, ImageDataset, TrainTr
                   dataset_split, pick_crop_size)
 from model import ARCHITECTURES, build_model, recalibrate_bn
 
-DEFAULT_DATASETS = ["data", "data-lowqual", "data-new", "data-new-new"]
+# data-new is left out by default: training on it dragged data's held-out AUC from ~0.91 to ~0.73
+# at epoch 7 while data-new itself stayed near chance. Add it with --data to experiment.
+DEFAULT_DATASETS = ["data", "data-lowqual", "data-new-new"]
 
 
 def roc_auc(labels, scores):

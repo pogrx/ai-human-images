@@ -19,12 +19,16 @@ If you have an NVIDIA GPU, install the CUDA build of PyTorch first (see pytorch.
 
 ## 1. Add training data
 
-The repository holds two datasets, each in its own folder. Training uses both by default:
+The repository holds four datasets, each in its own folder. Training uses all except `data-new` by default (see the results below for why):
 
 | Folder | Images | Size | Source |
 |---|---|---|---|
 | `data/train/{ai,real}` | 1,500 AI (6 generators), 1,707 real | full-size (256–1024 px) | Tiny-GenImage subset |
 | `data-lowqual/{ai,real}` | 60,000 AI, 60,000 real | 32×32 | low-quality set added to the repo; file names start with the split it came from (`LowQual_train_…`, `Real_test_…`) |
+| `data-new/{ai,real}` | 538 AI, 436 real | mixed (135–5,663 px) | AI art and real art/photos collected from the web |
+| `data-new-new/{ai,real}` | 250 AI, 745 real | 512–1,080 px | AI images and real photos (animals, city, food, nature, people) |
+
+In `data-new` and `data-new-new`, every image that wasn't a JPEG (all of `data-new-new`'s AI images, and some PNGs in both classes of `data-new`) was re-saved as a JPEG at the quality settings of that dataset's own real photos. Otherwise the network could learn "PNG = AI" instead of anything about AI images. The originals are still in the git history.
 
 The full-size set takes about 415 MB: 1,500 AI images from 6 generators and 1,707 real photos. They come from [Tiny-GenImage](https://huggingface.co/datasets/TheKernel01/Tiny-GenImage), 2 of its 4 validation shards. The real photos are from ImageNet, whose terms don't allow public redistribution, so keep this repository private or remove `data/` before making it public.
 
@@ -72,7 +76,7 @@ Tips for a detector that actually generalizes:
 - **Match the two classes on everything except "AI-ness".** Use similar subjects, similar resolutions, and the same mix of file formats. If every AI image is a PNG and every real one is a JPEG, the network may learn to spot the format instead of the AI. Training applies random JPEG re-compression and resizing to both classes to reduce this.
 - **Mix several generators.** Use several different image models, not just one. A detector trained on a single generator often misses the others.
 - **Use more images.** A few thousand per class is a reasonable start.
-- **Tiny images are learned separately from large ones.** A model trained only on 32×32 images doesn't transfer to full-size photos, and the reverse is also true. Training on both datasets together, as below, handles both kinds.
+- **Tiny images are learned separately from large ones.** A model trained only on 32×32 images doesn't transfer to full-size photos, and the reverse is also true. Training on several datasets together, as below, handles both kinds.
 
 ## 2. Train
 
@@ -80,36 +84,44 @@ Tips for a detector that actually generalizes:
 .\.venv\Scripts\python.exe train.py
 ```
 
-With no `--data`, this trains one model on both `data` and `data-lowqual` (whichever exist). To use particular datasets, list them: `--data data`, or `--data data data-lowqual ..\another-dataset`.
+With no `--data`, this trains one model on `data`, `data-lowqual` and `data-new-new` (whichever exist). To use particular datasets, list them: `--data data`, or `--data data data-new ..\another-dataset`.
 
 How the datasets are combined, while staying separate:
 - **One dataset per batch.** Each batch of images comes from just one dataset, so every image in it has the same crop size. Full-size images are cropped to 256 px. The 32×32 images are trained at their own size instead of being padded up, so padding can't become a shortcut.
-- **Equal say.** Each dataset gets the same number of training steps per epoch, so the 120,000 small images don't drown out the 3,200 large ones. Batches of small images hold more images (256 vs 16), because each one is much cheaper to process.
+- **Equal say.** Each dataset gets the same number of training steps per epoch, so the 120,000 small images don't drown out the full-size ones. An epoch is one pass over the largest full-size dataset (`data`); the smaller sets are cycled through several times, each time with fresh random crops and augmentations. Batches of small images hold more images (256 vs 16), because each one is much cheaper to process.
 - **Balanced batches.** Every batch is half AI, half real.
-- **Separate normalization statistics.** The network's BatchNorm layers keep running averages of what they see. One shared average fitted neither the 32 px nor the 256 px images well; in a test it cost 3–5 points of accuracy. So after each epoch these averages are measured separately for each dataset and both sets are saved. When predicting, the set whose crop size is closest to the image's size is used.
+- **Separate normalization statistics.** The network's BatchNorm layers keep running averages of what they see. One shared average fitted neither the 32 px nor the 256 px images well; in a test it cost 3–5 points of accuracy. So after each epoch these averages are measured separately for each crop size (the full-size datasets share one set, the 32 px set has its own) and saved. When predicting, the set whose crop size is closest to the image's size is used, and training scores each dataset the same way.
 - **Separate held-out sets.** Each dataset holds out 15% of its images, or uses its own `val/` folder if it has one. Accuracy is reported for each dataset every epoch.
 
 | Option | Default | Notes |
 |---|---|---|
-| `--data` | `data data-lowqual` | One or more dataset folders. |
+| `--data` | `data data-lowqual data-new-new` | One or more dataset folders. |
 | `--arch` | `forensic` | `forensic` is a compact CNN with fixed high-pass filters and is fast on a CPU. `resnet18` starts from ImageNet weights (downloaded on first use, about 45 MB) and usually generalizes better given enough data. |
 | `--crop-size` | 256 | Largest crop. Images are cropped at native resolution, never shrunk, so fine generator artifacts survive. |
-| `--epochs` | 20 | Each epoch takes about 6 minutes on a CPU with both datasets. |
+| `--epochs` | 20 | Each epoch takes about 5–7 minutes on a CPU with the default datasets. |
 | `--batch-size` | 16 | Batch size at 256 px. Smaller images get proportionally bigger batches, up to `--max-batch` (256). |
+| `--steps` | auto | Batches per dataset per epoch. By default, one pass over the largest full-size dataset. |
 | `--max-val` | 2000 | Held-out images scored per dataset each epoch, to keep epochs quick. |
 | `--workers` | 4 | Data-loading processes. Use 0 if you hit multiprocessing errors. |
 | `--out` | `checkpoints/detector.pt` | |
 
-A run on a CPU takes about 4 minutes per epoch. It saves its full progress after every epoch. If the run is interrupted (the computer sleeps, the window closes), run the same command again with `--resume` to continue from the last finished epoch.
+It saves its full progress after every epoch. If the run is interrupted (the computer sleeps, the window closes), run the same command again with `--resume` to continue from the last finished epoch. Keep a laptop plugged in: on battery, epochs ran 3–8 times slower.
 
-Current model: 20 epochs on both datasets. Held-out results, scored through `predict.py`:
+Current model: 20 epochs on `data`, `data-lowqual` and `data-new-new`. Held-out results, scored through `predict.py`:
 
 | Dataset | Accuracy | AUC | AI images caught | Real images wrongly flagged |
 |---|---|---|---|---|
-| `data` (481 images) | 91.3% | 0.978 | 97% | 14% |
-| `data-lowqual` (4,000 sampled) | 93.7% | 0.984 | 95% | 8% |
+| `data` (481 images) | 89.8% | 0.969 | 93% | 13% |
+| `data-lowqual` (4,000 sampled) | 92.7% | 0.980 | 94% | 9% |
+| `data-new-new` (149 images) | 69.8% | 0.896 | 88% | 36% |
+| `data-new` (146 images, not trained on) | 61.0% | 0.650 | 61% | 40% |
 
-For comparison, a model trained on `data` alone scored 91.7% on `data` but only 49% on `data-lowqual`, no better than guessing.
+With only about 150 held-out images, the `data-new-new` and `data-new` figures can move several points by chance.
+
+How it compares with earlier models:
+- **Previous model** (`data` and `data-lowqual` only): 91.3% / 0.978 on `data` and 93.7% / 0.984 on `data-lowqual`, slightly better, but only 46% / 0.653 on `data-new-new`.
+- **`data` alone:** 91.7% on `data` but only 49% on `data-lowqual`, no better than guessing.
+- **All four datasets:** stopped after 7 of 20 epochs. Training on `data-new` pulled `data` down to 0.73 AUC (the run without it was at 0.87 by then), while `data-new` itself stayed close to guessing. Its images are web-collected art of every size and style, and the model found nothing in them that reliably separates AI from real. So `data-new` is kept in the repo but left out of training by default; add it with `--data` to experiment.
 
 The checkpoint with the best average AUC across datasets is kept. When predicting, images smaller than 256 px are scored at their own size, matching how they were trained.
 
@@ -135,7 +147,7 @@ For large images, several native-resolution crops (up to 9, set with `--max-crop
 .\.venv\Scripts\python.exe app.py
 ```
 
-This opens a local page at http://127.0.0.1:7860, after about 25 seconds spent listing the held-out images of both datasets. It runs only on your computer; nothing is uploaded anywhere. There you can:
+This opens a local page at http://127.0.0.1:7860, after about 25 seconds spent listing the held-out images of each dataset the model was trained on. It runs only on your computer; nothing is uploaded anywhere. There you can:
 - **Score your own images:** drag and drop, pick files, or paste with Ctrl+V. Each image gets a 0–100% AI score and a verdict.
 - **See the heatmap:** it shows which parts of the image looked AI (orange) or real (green).
 - **Quiz the model:** score random held-out images it never trained on, see whether each answer was right, and keep a running tally.
