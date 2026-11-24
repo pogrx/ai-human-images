@@ -19,7 +19,7 @@ If you have an NVIDIA GPU, install the CUDA build of PyTorch first (see pytorch.
 
 ## 1. Add training data
 
-The repository holds four datasets, each in its own folder. Training uses all except `data-new` by default (see the results below for why):
+The repository holds four datasets, each in its own folder. Training uses all four by default:
 
 | Folder | Images | Size | Source |
 |---|---|---|---|
@@ -84,7 +84,7 @@ Tips for a detector that actually generalizes:
 .\.venv\Scripts\python.exe train.py
 ```
 
-With no `--data`, this trains one model on `data`, `data-lowqual` and `data-new-new` (whichever exist). To use particular datasets, list them: `--data data`, or `--data data data-new ..\another-dataset`.
+With no `--data`, this trains one model on `data`, `data-lowqual`, `data-new` and `data-new-new` (whichever exist). To use particular datasets, list them: `--data data`, or `--data data data-new ..\another-dataset`.
 
 How the datasets are combined, while staying separate:
 - **One dataset per batch.** Each batch of images comes from just one dataset, so every image in it has the same crop size. Full-size images are cropped to 256 px. The 32×32 images are trained at their own size instead of being padded up, so padding can't become a shortcut.
@@ -95,7 +95,7 @@ How the datasets are combined, while staying separate:
 
 | Option | Default | Notes |
 |---|---|---|
-| `--data` | `data data-lowqual data-new-new` | One or more dataset folders. |
+| `--data` | all four | One or more dataset folders. |
 | `--arch` | `forensic` | `forensic` is a compact CNN with fixed high-pass filters and is fast on a CPU. `resnet18` starts from ImageNet weights (downloaded on first use, about 45 MB) and usually generalizes better given enough data. |
 | `--crop-size` | 256 | Largest crop. Images are cropped at native resolution, never shrunk, so fine generator artifacts survive. |
 | `--epochs` | 20 | Each epoch takes about 5–7 minutes on a CPU with the default datasets. |
@@ -107,21 +107,27 @@ How the datasets are combined, while staying separate:
 
 It saves its full progress after every epoch. If the run is interrupted (the computer sleeps, the window closes), run the same command again with `--resume` to continue from the last finished epoch. Keep a laptop plugged in: on battery, epochs ran 3–8 times slower.
 
-Current model: 20 epochs on `data`, `data-lowqual` and `data-new-new`. Held-out results, scored through `predict.py`:
+Current model: 20 epochs on all four datasets (best epoch 19). Held-out results, scored through `predict.py`:
 
 | Dataset | Accuracy | AUC | AI images caught | Real images wrongly flagged |
 |---|---|---|---|---|
-| `data` (481 images) | 89.8% | 0.969 | 93% | 13% |
-| `data-lowqual` (4,000 sampled) | 92.7% | 0.980 | 94% | 9% |
-| `data-new-new` (149 images) | 69.8% | 0.896 | 88% | 36% |
-| `data-new` (146 images, not trained on) | 61.0% | 0.650 | 61% | 40% |
+| `data` (481 images) | 86.1% | 0.943 | 78% | 6% |
+| `data-lowqual` (4,000 sampled) | 93.5% | 0.981 | 95% | 8% |
+| `data-new` (146 images) | 67.8% | 0.762 | 60% | 22% |
+| `data-new-new` (149 images) | 81.2% | 0.973 | 94% | 23% |
 
-With only about 150 held-out images, the `data-new-new` and `data-new` figures can move several points by chance.
+With only about 150 held-out images, the `data-new` and `data-new-new` figures can move several points by chance. `data-new` is the hardest set: web-collected art of every size and style, where the model finds only a weak difference between AI and real.
 
-How it compares with earlier models:
-- **Previous model** (`data` and `data-lowqual` only): 91.3% / 0.978 on `data` and 93.7% / 0.984 on `data-lowqual`, slightly better, but only 46% / 0.653 on `data-new-new`.
-- **`data` alone:** 91.7% on `data` but only 49% on `data-lowqual`, no better than guessing.
-- **All four datasets:** stopped after 7 of 20 epochs. Training on `data-new` pulled `data` down to 0.73 AUC (the run without it was at 0.87 by then), while `data-new` itself stayed close to guessing. Its images are web-collected art of every size and style, and the model found nothing in them that reliably separates AI from real. So `data-new` is kept in the repo but left out of training by default; add it with `--data` to experiment.
+How it compares with earlier models, on the same held-out images:
+
+| Trained on | `data` | `data-lowqual` | `data-new` | `data-new-new` |
+|---|---|---|---|---|
+| all four (current) | 86.1% / 0.943 | 93.5% / 0.981 | 67.8% / 0.762 | 81.2% / 0.973 |
+| `data`, `data-lowqual`, `data-new-new` | 89.8% / 0.969 | 92.7% / 0.980 | 61.0% / 0.650 | 69.8% / 0.896 |
+| `data`, `data-lowqual` | 91.3% / 0.978 | 93.7% / 0.984 | 63.0% / 0.649 | 45.6% / 0.653 |
+| `data` alone | 91.7% | 49% (guessing) | | |
+
+Adding the new datasets trades a few points on `data` for large gains on the new ones. In the four-dataset run, `data` started slowly (about 0.73 AUC through epoch 7) but so did the run without `data-new`; both caught up as the learning rate came down. The four-dataset run was interrupted after epoch 7 and finished with `--resume`.
 
 The checkpoint with the best average AUC across datasets is kept. When predicting, images smaller than 256 px are scored at their own size, matching how they were trained.
 
