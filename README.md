@@ -102,6 +102,7 @@ How the datasets are combined, while staying separate:
 | `--batch-size` | 16 | Batch size at 256 px. Smaller images get proportionally bigger batches, up to `--max-batch` (256). |
 | `--steps` | auto | Batches per dataset per epoch. By default, one pass over the largest full-size dataset. |
 | `--max-val` | 2000 | Held-out images scored per dataset each epoch, to keep epochs quick. |
+| `--ema` | 0.999 | Decay of the running average of the weights that is evaluated and saved. 0 turns it off. |
 | `--workers` | 4 | Data-loading processes. Use 0 if you hit multiprocessing errors. |
 | `--out` | `checkpoints/detector.pt` | |
 
@@ -111,10 +112,12 @@ Current model: 20 epochs on all four datasets (best epoch 19). Held-out results,
 
 | Dataset | Accuracy | AUC | AI images caught | Real images wrongly flagged |
 |---|---|---|---|---|
-| `data` (481 images) | 86.1% | 0.943 | 78% | 6% |
-| `data-lowqual` (4,000 sampled) | 93.5% | 0.981 | 95% | 8% |
-| `data-new` (146 images) | 67.8% | 0.762 | 60% | 22% |
-| `data-new-new` (149 images) | 81.2% | 0.973 | 94% | 23% |
+| `data` (481 images) | 86.5% | 0.950 | 79% | 6% |
+| `data-lowqual` (4,000 sampled) | 93.8% | 0.983 | 95% | 7% |
+| `data-new` (146 images) | 67.8% | 0.777 | 55% | 16% |
+| `data-new-new` (149 images) | 83.2% | 0.976 | 97% | 21% |
+
+On `data` the model is cautious: it wrongly flags only 6% of real photos but misses about a fifth of the AI images. Its 0.5 cut-off isn't tuned per dataset, since that would mean tuning on the same images these results are measured on.
 
 With only about 150 held-out images, the `data-new` and `data-new-new` figures can move several points by chance. `data-new` is the hardest set: web-collected art of every size and style, where the model finds only a weak difference between AI and real.
 
@@ -123,13 +126,18 @@ How it compares with earlier models, on the same held-out images:
 | Trained on | `data` | `data-lowqual` | `data-new` | `data-new-new` |
 |---|---|---|---|---|
 | all four (current) | 86.1% / 0.943 | 93.5% / 0.981 | 67.8% / 0.762 | 81.2% / 0.973 |
+| all four, weight averaging (see below) | 86.3% / 0.951 | 93.4% / 0.983 | 71.2% / 0.777 | 81.2% / 0.981 |
 | `data`, `data-lowqual`, `data-new-new` | 89.8% / 0.969 | 92.7% / 0.980 | 61.0% / 0.650 | 69.8% / 0.896 |
 | `data`, `data-lowqual` | 91.3% / 0.978 | 93.7% / 0.984 | 63.0% / 0.649 | 45.6% / 0.653 |
 | `data` alone | 91.7% | 49% (guessing) | | |
 
+This comparison table uses the older scoring (9 crops, no mirrored copies), except the weight-averaging row, which uses the current scoring. The current model's figures with the current scoring are in the table above.
+
 Adding the new datasets trades a few points on `data` for large gains on the new ones. In the four-dataset run, `data` started slowly (about 0.73 AUC through epoch 7) but so did the run without `data-new`; both caught up as the learning rate came down. The four-dataset run was interrupted after epoch 7 and finished with `--resume`.
 
-The checkpoint with the best average AUC across datasets is kept. When predicting, images smaller than 256 px are scored at their own size, matching how they were trained.
+**Weight averaging.** Training now evaluates and saves a running average of the weights (`--ema 0.999`; `--ema 0` turns it off) rather than the latest weights. Held-out scores then rise steadily instead of swinging by up to 0.1 AUC between epochs, so the final epoch is also the best one. In a full rerun it scored the same as the current model within noise (row above), so the current model was kept; future training runs use averaging by default.
+
+The checkpoint with the best average AUC across datasets is kept, and the final epoch's is saved alongside it as `<name>.final.pt`. When predicting, images smaller than 256 px are scored at their own size, matching how they were trained.
 
 ## 3. Predict
 
@@ -145,7 +153,7 @@ Output is one line per image:
 0.0412  images/holiday_photo.jpg
 ```
 
-For large images, several native-resolution crops (up to 9, set with `--max-crops`) are scored and averaged.
+For large images, several native-resolution crops (up to 16, set with `--max-crops`) are scored, each together with its mirror image (`--no-flip` skips that, for twice the speed). The crop scores are averaged before being turned into a 0–1 confidence, so one clearly AI-looking region counts for more than several borderline ones. Compared with the earlier 9 crops and no mirroring, this added 0.002–0.015 AUC on every dataset and takes under a second per image on a CPU.
 
 ## 4. Try it in your browser
 

@@ -31,6 +31,7 @@ Examples:
 """
 
 import argparse
+import copy
 import math
 import random
 import time
@@ -149,6 +150,8 @@ def main():
                    help="batches per dataset per epoch (default: one pass over the largest full-size dataset)")
     p.add_argument("--bn-images", type=int, default=1024,
                    help="training images per dataset used to measure BatchNorm stats each epoch")
+    p.add_argument("--ema", type=float, default=0.999,
+                   help="decay of the moving average of the weights that is evaluated and saved (0 = off)")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--out", default="checkpoints/detector.pt")
     p.add_argument("--seed", type=int, default=0)
@@ -215,6 +218,21 @@ def main():
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, epochs=args.epochs,
                                                     steps_per_epoch=len(sampler))
     criterion = nn.BCEWithLogitsLoss()  # batches are already class-balanced
+    # Exponential moving average of the weights: validation scores swing a lot from epoch to epoch,
+    # and the averaged weights are steadier and usually a little better. They are what gets
+    # evaluated and saved; the live weights keep training.
+    ema = copy.deepcopy(model).eval() if args.ema > 0 else None
+    for p in (ema.parameters() if ema else []):
+        p.requires_grad_(False)
+    ema_steps = 0
+
+    @torch.no_grad()
+    def update_ema():
+        nonlocal ema_steps
+        ema_steps += 1
+        decay = min(args.ema, (1 + ema_steps) / (10 + ema_steps))  # short warm-up from the random start
+        for p_avg, p in zip(ema.parameters(), model.parameters()):
+            p_avg.mul_(decay).add_(p.detach(), alpha=1 - decay)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,6 +246,11 @@ def main():
         if state["epochs"] != args.epochs:
             raise SystemExit(f"That run was started with --epochs {state['epochs']}; pass the same value to resume.")
         model.load_state_dict(state["model"])
+        if ema is not None:
+            if "ema" not in state:
+                raise SystemExit("That run was started without --ema; resume it with --ema 0.")
+            ema.load_state_dict(state["ema"])
+            ema_steps = state["ema_steps"]
         optimizer.load_state_dict(state["optimizer"])
         scheduler.load_state_dict(state["scheduler"])
         sampler.epoch = state["sampler_epoch"]
@@ -244,16 +267,19 @@ def main():
             loss.backward()
             optimizer.step()
             scheduler.step()
+            if ema is not None:
+                update_ema()
             running += loss.item()
             seen += 1
         # Score each dataset with the BatchNorm stats of its crop size, exactly as predict.py will.
+        scored = ema if ema is not None else model
         bn_stats, per = {}, {}
         for crop, group in bn_groups.items():
-            stats = recalibrate_bn(model, (x.to(device) for x, _ in bn_loaders[crop]))
+            stats = recalibrate_bn(scored, (x.to(device) for x, _ in bn_loaders[crop]))
             bn_stats[f"crop{crop}"] = {"crop": crop, "datasets": [d["name"] for d in group],
                                        "state": {k: v.cpu() for k, v in stats.items()}}
             for d in group:
-                per[d["name"]] = evaluate(model, val_loaders[d["name"]], criterion, device)
+                per[d["name"]] = evaluate(scored, val_loaders[d["name"]], criterion, device)
         per = {d["name"]: per[d["name"]] for d in datasets}
         # Overall = average over datasets, so each dataset counts equally.
         overall = {k: float(np.mean([m[k] for m in per.values()])) for k in ("loss", "acc", "auc")}
@@ -261,30 +287,37 @@ def main():
               + " | ".join(f"{n}: acc {m['acc']:.3f} auc {m['auc']:.3f}" for n, m in per.items())
               + f" | {time.time() - start:.0f}s")
 
+        checkpoint = {
+            "arch": args.arch,
+            "crop_size": args.crop_size,
+            # Images smaller than crop_size are scored at their own size, down to min_crop.
+            "min_crop": MIN_CROP,
+            "state_dict": scored.state_dict(),
+            "ema": args.ema,
+            "class_to_label": CLASS_TO_LABEL,
+            "epoch": epoch,
+            # How validation images were chosen, so tools (e.g. app.py) can find held-out images.
+            "split": {"seed": args.seed, "val_fraction": args.val_fraction,
+                      "datasets": [d["root"] for d in datasets]},
+            "datasets": [{"name": d["name"], "root": d["root"], "crop": d["crop"],
+                          "n_train": len(d["train"]), "n_val": len(d["val"])} for d in datasets],
+            "val_metrics": {**overall, "per_dataset": per},
+            # BatchNorm stats per crop size; predict.Detector picks the set whose crop size fits the image.
+            "bn_stats": bn_stats,
+        }
         key = (overall["auc"], -overall["loss"])
         if best is None or key > best:
             best = key
-            torch.save({
-                "arch": args.arch,
-                "crop_size": args.crop_size,
-                # Images smaller than crop_size are scored at their own size, down to min_crop.
-                "min_crop": MIN_CROP,
-                "state_dict": model.state_dict(),
-                "class_to_label": CLASS_TO_LABEL,
-                "epoch": epoch,
-                # How validation images were chosen, so tools (e.g. app.py) can find held-out images.
-                "split": {"seed": args.seed, "val_fraction": args.val_fraction,
-                          "datasets": [d["root"] for d in datasets]},
-                "datasets": [{"name": d["name"], "root": d["root"], "crop": d["crop"],
-                              "n_train": len(d["train"]), "n_val": len(d["val"])} for d in datasets],
-                "val_metrics": {**overall, "per_dataset": per},
-                # BatchNorm stats per crop size; predict.Detector picks the set whose crop size fits the image.
-                "bn_stats": bn_stats,
-            }, out_path)
+            torch.save(checkpoint, out_path)
             print(f"  saved best model -> {out_path}")
+        if epoch == args.epochs:  # the final model too, which the best-epoch choice can't flatter
+            final_path = out_path.with_name(out_path.stem + ".final.pt")
+            torch.save(checkpoint, final_path)
+            print(f"  saved final model -> {final_path}")
 
         torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(), "sampler_epoch": sampler.epoch,
+                    **({"ema": ema.state_dict(), "ema_steps": ema_steps} if ema is not None else {}),
                     "epoch": epoch, "epochs": args.epochs, "best": list(best)}, resume_path)
 
     resume_path.unlink(missing_ok=True)

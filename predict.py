@@ -24,7 +24,7 @@ from model import build_model, load_bn_state
 class Detector:
     """Load once, then call ``detector(path)`` to get a 0-1 AI confidence."""
 
-    def __init__(self, checkpoint="checkpoints/detector.pt", max_crops=9, device=None):
+    def __init__(self, checkpoint="checkpoints/detector.pt", max_crops=16, flip=True, device=None):
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         if not Path(checkpoint).is_file():
             raise FileNotFoundError(f"No trained model at {checkpoint}. Train one first: python train.py --data data")
@@ -37,6 +37,7 @@ class Detector:
         # Older checkpoints were trained only on large crops: pad small images up to crop_size.
         self.min_crop = ckpt.get("min_crop", self.crop_size)
         self.max_crops = max_crops
+        self.flip = flip
         self.model = build_model(ckpt["arch"], pretrained=False).to(self.device)
         self.model.load_state_dict(ckpt["state_dict"])
         self.model.eval()
@@ -57,8 +58,9 @@ class Detector:
     def score_image(self, img):
         """PIL RGB image -> confidence in [0, 1] that it is AI-generated.
 
-        Scores several native-resolution crops and averages them, so the whole
-        image is considered without resizing away fine pixel detail.
+        Scores several native-resolution crops (and their mirror images) and
+        averages them, so the whole image is considered without resizing away
+        fine pixel detail.
         """
         return self.analyze(img)["confidence"]
 
@@ -74,10 +76,15 @@ class Detector:
         crop = self.crop_for(img)
         self.use_bn_for(crop)
         crops, boxes = multi_crops(img, crop, self.max_crops, return_boxes=True)
-        scores = torch.sigmoid(self.model(crops.to(self.device))).tolist()
+        crops = crops.to(self.device)
+        logits = self.model(crops)
+        if self.flip:  # also score each crop's mirror image (training used random flips)
+            logits = (logits + self.model(torch.flip(crops, dims=[3]))) / 2
+        # Average in logit space: one very confident crop counts for more than one barely-over-0.5
+        # crop, and it scored slightly better on the held-out images than averaging probabilities.
         return {
-            "confidence": sum(scores) / len(scores),
-            "regions": [{"box": box, "score": s} for box, s in zip(boxes, scores)],
+            "confidence": torch.sigmoid(logits.mean()).item(),
+            "regions": [{"box": box, "score": s} for box, s in zip(boxes, torch.sigmoid(logits).tolist())],
         }
 
     def __call__(self, path):
@@ -99,12 +106,13 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("inputs", nargs="+", help="image files and/or folders")
     p.add_argument("--checkpoint", default="checkpoints/detector.pt")
-    p.add_argument("--max-crops", type=int, default=9, help="crops averaged per image (more = slower, steadier)")
+    p.add_argument("--max-crops", type=int, default=16, help="crops averaged per image (more = slower, steadier)")
+    p.add_argument("--no-flip", action="store_true", help="don't also score mirrored crops (twice as fast)")
     p.add_argument("--csv", help="also write results to this CSV file")
     args = p.parse_args()
 
     try:
-        detector = Detector(args.checkpoint, max_crops=args.max_crops)
+        detector = Detector(args.checkpoint, max_crops=args.max_crops, flip=not args.no_flip)
     except FileNotFoundError as exc:
         sys.exit(str(exc))
     rows = []
